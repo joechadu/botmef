@@ -1,14 +1,22 @@
-import aiohttp
-import pandas as pd
-from bs4 import BeautifulSoup
+# Standard Library Imports
 from datetime import datetime
 from io import BytesIO
+import sys
+from urllib.parse import urljoin
+
+# Configure UTF-8 encoding for stdout on Windows to avoid UnicodeEncodeError with emojis
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+
+# Third-Party Imports
+import aiohttp
+from bs4 import BeautifulSoup
+import pandas as pd
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     ConversationHandler, ContextTypes, filters
 )
-from urllib.parse import urljoin
 
 # --- Estados del ConversationHandler ---
 PEDIR_ANIO, PEDIR_UNIDAD, PEDIR_NUM, MOSTRAR_CAPTCHA, PEDIR_CAPTCHA, CONSULTA_FINAL = range(6)
@@ -32,12 +40,19 @@ def validar_numero(numero_text):
 
 # --- INICIO ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Cerrar sesión si existe para evitar fugas de memoria
+    session = context.user_data.get("session")
+    if session and not session.closed:
+        await session.close()
+    context.user_data.clear()
+
     print(f"🚀 Usuario @{update.effective_user.username or update.effective_user.id} inició el bot.")
     keyboard = [["/consulta_exp", "/consulta_cert"]]
     await update.message.reply_text(
         "👋 ¡Bienvenido! Elige el tipo de consulta:",
         reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
     )
+    return ConversationHandler.END
 
 
 # --- CANCELAR ---
@@ -100,19 +115,25 @@ async def pedir_numero(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # --- MOSTRAR CAPTCHA ---
-async def mostrar_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    numero = update.message.text.strip()
-    if not validar_numero(numero):
-        await update.message.reply_text("Número inválido. Debe ser numérico y hasta 10 dígitos:")
-        return PEDIR_NUM
+async def mostrar_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE, es_reintento: bool = False):
+    if not es_reintento:
+        numero = update.message.text.strip()
+        if not validar_numero(numero):
+            await update.message.reply_text("Número inválido. Debe ser numérico y hasta 10 dígitos:")
+            return PEDIR_NUM
+        context.user_data['numero'] = numero
 
-    context.user_data['numero'] = numero
     tipo = context.user_data['tipo']
     url_base = (
         "https://apps2.mef.gob.pe/consulta-vfp-webapp/consultaExpediente.jspx"
         if tipo == "expediente"
         else "https://apps2.mef.gob.pe/consulta-vfp-webapp/consultaCertificado.jspx"
     )
+
+    # Si ya hay una sesión activa, la cerramos para evitar fugas de memoria
+    old_session = context.user_data.get("session")
+    if old_session and not old_session.closed:
+        await old_session.close()
 
     # Crear sesión persistente con headers reales
     session = aiohttp.ClientSession(headers={
@@ -180,9 +201,24 @@ async def procesar_consulta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tabla = soup.find("table")
 
     if not tabla:
-        print(f"❌ Captcha fallido por @{update.effective_user.username or update.effective_user.id}")
-        await update.message.reply_text("❌ Captcha incorrecto o no se encontró información. Inténtelo nuevamente.")
-        return await mostrar_captcha(update, context)
+        # Intentar extraer mensaje de error del HTML
+        error_msg = ""
+        blockquote = soup.find("blockquote")
+        if blockquote:
+            p_tag = blockquote.find("p")
+            if p_tag:
+                error_msg = p_tag.get_text(strip=True)
+
+        if error_msg and any(word in error_msg.lower() for word in ["concuerdan", "captcha", "imagen"]):
+            print(f"❌ Captcha incorrecto por @{update.effective_user.username or update.effective_user.id}")
+            await update.message.reply_text("❌ El captcha ingresado es incorrecto. Inténtelo nuevamente.")
+            return await mostrar_captcha(update, context, es_reintento=True)
+        else:
+            msg = error_msg if error_msg else "No se encontró información o los datos son incorrectos."
+            print(f"⚠️ Consulta sin resultados o error: {msg}")
+            await update.message.reply_text(f"⚠️ {msg}")
+            await session.close()
+            return ConversationHandler.END
 
     data = []
     headers = [th.get_text(strip=True) for th in tabla.find_all("th")]
@@ -228,16 +264,25 @@ async def consulta_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
         )
         return ConversationHandler.END
-    else:
+    elif respuesta in ["no"]:
         await update.message.reply_text("👋 Gracias por usar el bot. ¡Hasta luego!")
         return ConversationHandler.END
+    else:
+        keyboard = [["Sí", "No"]]
+        await update.message.reply_text(
+            "⚠️ Opción no válida. Por favor, responda con 'Sí' o 'No':",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+        )
+        return CONSULTA_FINAL
 
 
 # --- MAIN ---
 def main():
     print("🤖 Iniciando bot del MEF...")
 
-    application = ApplicationBuilder().token("COLOCAR_TU_TOKEN_ID_TELEGRAM").build()
+
+    application = ApplicationBuilder().token("COLOCA_TU_TOKE_AQUI_TELEGRAM_BOT").build()
+
 
     conv_handler = ConversationHandler(
         entry_points=[
@@ -249,19 +294,18 @@ def main():
         PEDIR_UNIDAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, pedir_numero)],
         PEDIR_NUM: [MessageHandler(filters.TEXT & ~filters.COMMAND, mostrar_captcha)],
         PEDIR_CAPTCHA: [MessageHandler(filters.TEXT & ~filters.COMMAND, procesar_consulta)],
-        CONSULTA_FINAL: [MessageHandler(filters.Regex("^(Sí|No|si|no)$"), consulta_final)],
+        CONSULTA_FINAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, consulta_final)],
         },
         fallbacks=[
            CommandHandler("start", start),
-              CommandHandler("cancelar", cancelar)
-            
-            ],
+           CommandHandler("cancelar", cancelar)
+        ],
         allow_reentry=True,  # 🔥 Permite reiniciar flujo sin reiniciar bot
     )
 
+    application.add_handler(conv_handler)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancelar", cancelar))
-    application.add_handler(conv_handler)
 
     print("✅ Bot iniciado y escuchando actualizaciones.")
     application.run_polling()
