@@ -241,6 +241,14 @@ Este proyecto es de uso interno / educativo.
 
 ---
 
-<p align="center">
-  Desarrollado con ❤️ para el Ministerio de Economía y Finanzas del Perú
-</p>
+<p align="center">Desarrollado con ❤️ por</p>
+
+```diff
++    ****    *****   ******  *****
++   *    *   *    *  *       *    *
++   *    *   *****   ****    *    *
++   *    *   *    *  *       *    *
++    ****    *****   ******  *****
+```
+
+<p align="center">para el Ministerio de Economía y Finanzas del Perú</p>
