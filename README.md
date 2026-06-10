@@ -251,4 +251,3 @@ Este proyecto es de uso interno / educativo.
 +    ****    *****   ******  *****
 ```
 
-<p align="center">para el Ministerio de Economía y Finanzas del Perú</p>
