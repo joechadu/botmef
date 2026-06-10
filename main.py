@@ -280,8 +280,7 @@ async def consulta_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     print("🤖 Iniciando bot del MEF...")
 
-
-    application = ApplicationBuilder().token("COLOCA_TU_TOKE_AQUI_TELEGRAM_BOT").build()
+    application = ApplicationBuilder().token("COLOCA_TU_TOKE_AQUI_TELEGRAM").build()
 
 
     conv_handler = ConversationHandler(
